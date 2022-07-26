@@ -9,6 +9,7 @@
     * MacOS
 */
 
+#include <fcntl.h>
 #include <stdint.h>
 #include <unistd.h>
 
@@ -19,6 +20,11 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <sys/unistd.h>
+
+#if __unix__
+#include <sys/stat.h>
+#endif
 
 using namespace std;
 using namespace chrono;
@@ -63,11 +69,12 @@ inline string expower_data(uintmax_t bytes) {
 }
 
 int main() {
-    const uint32_t blockWrite = 1024 * 1024;  // Размер блока 1 MiB
-    const uint32_t countWrite = 312;          // Size write
-
-    string filename = "test-block-file";
+    const uint32_t blockSize = 4096*1024*20;  // Размер блока
+    const uint32_t countWrite = 312;   // Size write
+    int x;
+    int fd;
     char* buf;
+    std::size_t bufsize;
     uint32_t counter = countWrite;
     struct {
         intmax_t num, den;
@@ -77,6 +84,7 @@ int main() {
     time_x latency = 0;
     time_x minLatency = numeric_limits<time_x>::max();
     time_x approxAverrageLatency = 0;
+    string filename = "badhup.";
 
     setlocale(LC_ALL, nullptr);
 
@@ -103,49 +111,65 @@ int main() {
     // init local time
     diff = tick();
 
-    buf = reinterpret_cast<char*>(std::malloc(std::max(128u, blockWrite)));
+    buf = reinterpret_cast<char*>(std::malloc(bufsize = std::max(256u, blockSize)));
     if (buf == nullptr) {
-        cout << "Bad alloc";
-        return EXIT_FAILURE;
+        throw std::bad_alloc();
     }
 
-    getcwd(buf, 256);
+    getcwd(buf, bufsize);
+    if (strlen(buf) == bufsize) {
+        buf = reinterpret_cast<char*>(std::realloc(buf, bufsize *= 2));
+        if (buf == nullptr) {
+            throw std::bad_alloc();
+        }
+        getcwd(buf, bufsize);
+    }
     strcat(buf, "/");
     filename = buf + filename;
-    std::filebuf fd;
-    fd.open(filename, std::ios::out | std::ios::binary | ios::trunc);
-    // int fd = open(filename.c_str(), O_CLOEXEC | O_NOATIME | O_SYNC | O_TRUNC | O_CREAT | O_WRONLY);
-    // if (fd == -1)
-    if (!fd.is_open()) {
+    filename.resize(filename.size() + 7, ' ');
+    srand(time(nullptr));
+    struct stat st;
+    do {
+        for (x = 0; x < 8; ++x) {
+            filename[filename.size() - x] = static_cast<char>(rand() % 26 + 'a');
+        }
+        x=stat(filename.c_str(), &st);
+    } while (!x);
+
+    //  std::fstream fd;
+    // fd.open(filename, std::ios::out | std::ios::binary | ios::trunc);
+
+    fd = open(filename.c_str(), O_NOATIME | O_SYNC | O_TRUNC | O_CREAT | O_WRONLY);
+
+    if (fd == -1) {
         cout << strerror(errno);
         return EXIT_FAILURE;
     }
 
-    std::memset(buf, ~0, blockWrite);
+    std::memset(buf, ~0, blockSize);
 
     while (counter--) {
         estimated = tick();
         // start write
-        std::size_t nwritten = fd.sputn(buf, blockWrite);
-        fd.pubsync();
+        write(fd, buf, blockSize);
+
         estimated = tick() - estimated;
 
         approxAverrageLatency += estimated;
         latency = std::max(latency, estimated);
         minLatency = std::min(minLatency, estimated);
         cout << "\rWrited " << (100 * (countWrite - counter) / countWrite) << "% ("
-             << expower_data(blockWrite * (countWrite - counter)) << "/" + expower_data(countWrite * blockWrite) << ") - "
+             << expower_data(blockSize * (countWrite - counter)) << "/" + expower_data(countWrite * blockSize) << ") - "
              << "Current speed "
              << expower_data(static_cast<uintmax_t>(
-                    ((blockWrite * (countWrite - counter)) / static_cast<long double>(approxAverrageLatency)) *
+                    ((blockSize * (countWrite - counter)) / static_cast<long double>(approxAverrageLatency)) *
                     timeSecondConverter.num * timeSecondConverter.den))
              << "/second";
         cout.flush();
     }
 
-    fd.close();  // close file
+    close(fd);  // close file
     // remove file
-
     std::remove(filename.c_str());
 
     cout << "\r\0";
@@ -161,11 +185,11 @@ int main() {
     std::free(buf);
 
     cout << ">>Speed "
-         << expower_data(static_cast<uintmax_t>((blockWrite / static_cast<long double>(approxAverrageLatency)) *
+         << expower_data(static_cast<uintmax_t>((blockSize / static_cast<long double>(approxAverrageLatency)) *
                                                 timeSecondConverter.num * timeSecondConverter.den))
          << "/seconds<<" << endl;
-    cout << "Block per write: " << expower_data(blockWrite) << endl;
-    cout << "Total writed: " << expower_data(static_cast<uintmax_t>(blockWrite) * countWrite);
+    cout << "Block per write: " << expower_data(blockSize) << endl;
+    cout << "Total writed: " << expower_data(static_cast<uintmax_t>(blockSize) * countWrite);
     cout << endl;
 
     return 0;
