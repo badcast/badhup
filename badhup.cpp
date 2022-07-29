@@ -11,6 +11,7 @@
 
 #include <fcntl.h>
 #include <stdint.h>
+#include <sys/unistd.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -20,7 +21,6 @@
 #include <iostream>
 #include <string>
 #include <thread>
-#include <sys/unistd.h>
 
 #if __unix__
 #include <sys/stat.h>
@@ -30,6 +30,10 @@ using namespace std;
 using namespace chrono;
 
 typedef uintmax_t time_x;
+
+struct {
+    intmax_t num, den;
+} timeSecondConverter;
 
 time_x diff = 0;
 
@@ -68,17 +72,18 @@ inline string expower_data(uintmax_t bytes) {
     return std::to_string(bytes) + " " + data_kind[std::min(x, 5u)];
 }
 
+time_x convertToSeconds(time_x value){
+    value =
+}
+
 int main() {
-    const uint32_t blockSize = 4096*1024*20;  // Размер блока
-    const uint32_t countWrite = 312;   // Size write
+    const uint32_t blockSize = 64 * 1024;  // Размер блока
+    const uint32_t countWrite = 312;       // Size write
     int x;
     int fd;
     char* buf;
     std::size_t bufsize;
     uint32_t counter = countWrite;
-    struct {
-        intmax_t num, den;
-    } timeSecondConverter;
     time_x (*tick)(void);
     time_x estimated;
     time_x latency = 0;
@@ -100,10 +105,14 @@ int main() {
     else if (tick == &tick_microsec) {
         timeSecondConverter.den = std::micro::den;
         timeSecondConverter.num = std::micro::num;
-    } else if (tick == &tick_millisec) {
+    }
+    // millis to Second
+    else if (tick == &tick_millisec) {
         timeSecondConverter.den = std::milli::den;
         timeSecondConverter.num = std::milli::num;
-    } else {
+    }
+    // Second base
+    else {
         timeSecondConverter.den = 1;
         timeSecondConverter.num = 1;
     }
@@ -133,13 +142,10 @@ int main() {
         for (x = 0; x < 8; ++x) {
             filename[filename.size() - x] = static_cast<char>(rand() % 26 + 'a');
         }
-        x=stat(filename.c_str(), &st);
+        x = stat(filename.c_str(), &st);
     } while (!x);
 
-    //  std::fstream fd;
-    // fd.open(filename, std::ios::out | std::ios::binary | ios::trunc);
-
-    fd = open(filename.c_str(), O_NOATIME | O_SYNC | O_TRUNC | O_CREAT | O_WRONLY);
+    fd = open(filename.c_str(), O_NOATIME | O_TRUNC | O_CREAT | O_WRONLY);
 
     if (fd == -1) {
         cout << strerror(errno);
@@ -168,6 +174,15 @@ int main() {
         cout.flush();
     }
 
+    estimated = tick();
+    x = fdatasync(fd);
+    estimated = tick() - estimated; // get wait time
+
+    if(x){
+        cout << strerror(errno);
+        return EXIT_FAILURE;
+    }
+
     close(fd);  // close file
     // remove file
     std::remove(filename.c_str());
@@ -176,11 +191,11 @@ int main() {
 
     approxAverrageLatency /= countWrite;
 
-    sprintf(buf, "%.32f", static_cast<double>(minLatency) * timeSecondConverter.num / timeSecondConverter.den);
+    sprintf(buf, "%f", static_cast<double>(minLatency) * timeSecondConverter.num / timeSecondConverter.den);
     cout << "Min latency: " << buf << " seconds" << endl;
-    sprintf(buf, "%.32f", static_cast<double>(approxAverrageLatency) * timeSecondConverter.num / timeSecondConverter.den);
+    sprintf(buf, "%f", static_cast<double>(approxAverrageLatency) * timeSecondConverter.num / timeSecondConverter.den);
     cout << "Approx latency: " << buf << " seconds" << endl;
-    sprintf(buf, "%.32f", static_cast<double>(latency) * timeSecondConverter.num / timeSecondConverter.den);
+    sprintf(buf, "%f", static_cast<double>(latency) * timeSecondConverter.num / timeSecondConverter.den);
     cout << "Max latency: " << buf << " seconds" << endl;
     std::free(buf);
 
