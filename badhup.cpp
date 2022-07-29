@@ -11,6 +11,7 @@
 
 #include <fcntl.h>
 #include <stdint.h>
+#include <sys/unistd.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -20,7 +21,6 @@
 #include <iostream>
 #include <string>
 #include <thread>
-#include <sys/unistd.h>
 
 #if __unix__
 #include <sys/stat.h>
@@ -30,6 +30,10 @@ using namespace std;
 using namespace chrono;
 
 typedef uintmax_t time_x;
+
+struct {
+    intmax_t num, den;
+} timeSecondConverter;
 
 time_x diff = 0;
 
@@ -69,29 +73,23 @@ inline string expower_data(uintmax_t bytes) {
 }
 
 int main() {
-    const uint32_t blockSize = 4096*1024*20;  // Размер блока
-    const uint32_t countWrite = 312;   // Size write
+    const uint32_t blockSize = 64 * 1024;  // Размер блока
+    const uint32_t countWrite = 312;       // Size write
     int x;
     int fd;
     char* buf;
     std::size_t bufsize;
     uint32_t counter = countWrite;
-    struct {
-        intmax_t num, den;
-    } timeSecondConverter;
-    time_x (*tick)(void);
-    time_x estimated;
-    time_x latency = 0;
-    time_x minLatency = numeric_limits<time_x>::max();
-    time_x approxAverrageLatency = 0;
     string filename = "badhup.";
+    time_x (*tick)(void);
+    time_x estimated, latency = 0, minLatency = numeric_limits<time_x>::max(), approxAverrageLatency = 0;
 
     setlocale(LC_ALL, nullptr);
 
     // Set a clock
     tick = &tick_nanosec;  // select clock dimension
 
-    // millis to Second
+    // nanos to Second
     if (tick == &tick_nanosec) {
         timeSecondConverter.den = std::nano::den;
         timeSecondConverter.num = std::nano::num;
@@ -100,10 +98,14 @@ int main() {
     else if (tick == &tick_microsec) {
         timeSecondConverter.den = std::micro::den;
         timeSecondConverter.num = std::micro::num;
-    } else if (tick == &tick_millisec) {
+    }
+    // millis to Second
+    else if (tick == &tick_millisec) {
         timeSecondConverter.den = std::milli::den;
         timeSecondConverter.num = std::milli::num;
-    } else {
+    }
+    // Second base
+    else {
         timeSecondConverter.den = 1;
         timeSecondConverter.num = 1;
     }
@@ -111,15 +113,14 @@ int main() {
     // init local time
     diff = tick();
 
-    buf = reinterpret_cast<char*>(std::malloc(bufsize = std::max(256u, blockSize)));
+    buf = static_cast<char*>(std::malloc(bufsize = std::max(256u, blockSize)));
     if (buf == nullptr) {
         throw std::bad_alloc();
     }
 
     getcwd(buf, bufsize);
     if (strlen(buf) == bufsize) {
-        buf = reinterpret_cast<char*>(std::realloc(buf, bufsize *= 2));
-        if (buf == nullptr) {
+        if ((buf = static_cast<char*>(std::realloc(buf, bufsize *= 2))) == nullptr) {
             throw std::bad_alloc();
         }
         getcwd(buf, bufsize);
@@ -133,13 +134,10 @@ int main() {
         for (x = 0; x < 8; ++x) {
             filename[filename.size() - x] = static_cast<char>(rand() % 26 + 'a');
         }
-        x=stat(filename.c_str(), &st);
+        x = stat(filename.c_str(), &st);
     } while (!x);
 
-    //  std::fstream fd;
-    // fd.open(filename, std::ios::out | std::ios::binary | ios::trunc);
-
-    fd = open(filename.c_str(), O_NOATIME | O_SYNC | O_TRUNC | O_CREAT | O_WRONLY);
+    fd = open(filename.c_str(), O_NOATIME | O_TRUNC | O_CREAT | O_WRONLY);
 
     if (fd == -1) {
         cout << strerror(errno);
@@ -147,6 +145,8 @@ int main() {
     }
 
     std::memset(buf, ~0, blockSize);
+
+    std::cout << "Timing data..." << std::endl;
 
     while (counter--) {
         estimated = tick();
@@ -158,36 +158,45 @@ int main() {
         approxAverrageLatency += estimated;
         latency = std::max(latency, estimated);
         minLatency = std::min(minLatency, estimated);
-        cout << "\rWrited " << (100 * (countWrite - counter) / countWrite) << "% ("
+        /*cout << "\rWrited " << (100 * (countWrite - counter) / countWrite) << "% ("
              << expower_data(blockSize * (countWrite - counter)) << "/" + expower_data(countWrite * blockSize) << ") - "
              << "Current speed "
              << expower_data(static_cast<uintmax_t>(
                     ((blockSize * (countWrite - counter)) / static_cast<long double>(approxAverrageLatency)) *
                     timeSecondConverter.num * timeSecondConverter.den))
              << "/second";
-        cout.flush();
+        cout.flush();*/
     }
 
+    estimated = tick();
+    x = fdatasync(fd);
+    estimated = tick() - estimated; // get wait time
     close(fd);  // close file
+
+    if(x){
+        cout << strerror(errno);
+        return EXIT_FAILURE;
+    }
+
+
     // remove file
     std::remove(filename.c_str());
 
-    cout << "\r\0";
-
     approxAverrageLatency /= countWrite;
 
-    sprintf(buf, "%.32f", static_cast<double>(minLatency) * timeSecondConverter.num / timeSecondConverter.den);
+    sprintf(buf, "%f", static_cast<double>(minLatency) * timeSecondConverter.num / timeSecondConverter.den);
     cout << "Min latency: " << buf << " seconds" << endl;
-    sprintf(buf, "%.32f", static_cast<double>(approxAverrageLatency) * timeSecondConverter.num / timeSecondConverter.den);
+    sprintf(buf, "%f", static_cast<double>(approxAverrageLatency) * timeSecondConverter.num / timeSecondConverter.den);
     cout << "Approx latency: " << buf << " seconds" << endl;
-    sprintf(buf, "%.32f", static_cast<double>(latency) * timeSecondConverter.num / timeSecondConverter.den);
+    sprintf(buf, "%f", static_cast<double>(latency) * timeSecondConverter.num / timeSecondConverter.den);
     cout << "Max latency: " << buf << " seconds" << endl;
+
     std::free(buf);
 
-    cout << ">>Speed "
-         << expower_data(static_cast<uintmax_t>((blockSize / static_cast<long double>(approxAverrageLatency)) *
-                                                timeSecondConverter.num * timeSecondConverter.den))
-         << "/seconds<<" << endl;
+    cout << ">> Speed "
+         << expower_data(static_cast<uintmax_t>((blockSize / static_cast<long double>(estimated)) *
+                                                timeSecondConverter.num / timeSecondConverter.den))
+         << "/s <<" << endl;
     cout << "Block per write: " << expower_data(blockSize) << endl;
     cout << "Total writed: " << expower_data(static_cast<uintmax_t>(blockSize) * countWrite);
     cout << endl;
